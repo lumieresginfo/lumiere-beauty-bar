@@ -1,58 +1,23 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { supabase, supabaseEnabled } from "./lib/supabase.js";
-import {
-  readLocal,
-  writeLocal,
-  queueRemoteWrite,
-  flushPending,
-  pullFromCloud,
-  bootstrapSync,
-  onSyncStatus,
-  getSyncStatus,
-} from "./lib/sync.js";
+import { useState, useEffect, useMemo } from "react";
 
-// ─── Persistent Storage Helpers (localStorage + Supabase sync) ────────────────
+// ─── Persistent Storage Helpers ───────────────────────────────────────────────
 const useStorage = (key, initial) => {
-  const [value, setValue] = useState(() => readLocal(key, initial));
-  const [loaded] = useState(true);
-
-  // 監聽外部寫入（例如雲端同步拉下來時）
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.detail?.key === key) setValue(e.detail.value);
-    };
-    const storageHandler = (e) => {
-      if (e.key === key && e.newValue != null) {
-        try { setValue(JSON.parse(e.newValue)); } catch {}
-      }
-    };
-    window.addEventListener("lumiere:storage", handler);
-    window.addEventListener("storage", storageHandler);
-    return () => {
-      window.removeEventListener("lumiere:storage", handler);
-      window.removeEventListener("storage", storageHandler);
-    };
-  }, [key]);
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : initial;
+    } catch { return initial; }
+  });
+  const [loaded, setLoaded] = useState(true);
 
   const set = (v) => {
-    setValue((prev) => {
-      const next = typeof v === "function" ? v(prev) : v;
-      writeLocal(key, next);
-      queueRemoteWrite(key, next);
-      return next;
-    });
+    const next = typeof v === "function" ? v(value) : v;
+    setValue(next);
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
   };
 
   return [value, set, loaded];
 };
-
-// 用來在「匯入備份」時直接重新整理整個 app
-const BACKUP_KEYS = [
-  "lumiere_sales_v2",
-  "lumiere_purchases_v2",
-  "lumiere_staff_v2",
-  "lumiere_expenses_v2",
-];
 
 // ─── Currency / Formatting ─────────────────────────────────────────────────────
 const CURRENCIES = ["SGD", "TWD", "CNY", "USD", "HKD", "Other"];
@@ -95,14 +60,6 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     chevron_right: <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>,
     sparkle: <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/>,
     info: <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>,
-    settings: <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94 0 .31.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>,
-    download: <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>,
-    upload: <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>,
-    cloud: <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>,
-    cloud_off: <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4c-1.48 0-2.85.43-4.01 1.17l1.46 1.46C10.21 6.23 11.08 6 12 6c3.04 0 5.5 2.46 5.5 5.5v.5H19c1.66 0 3 1.34 3 3 0 1.13-.64 2.11-1.56 2.62l1.45 1.45C23.16 18.16 24 16.68 24 15c0-2.64-2.05-4.78-4.65-4.96zM3 5.27l2.77 2.77C2.5 8.6 0 11 0 14c0 3.31 2.69 6 6 6h11.73l2 2L21 20.73 4.27 4 3 5.27zM7.73 10l8 8H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l2.17 2.17v-.2z"/>,
-    sync: <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>,
-    logout: <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>,
-    person: <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill={color} style={{flexShrink:0}}>
@@ -210,357 +167,26 @@ const MiniBar = ({ value, max, color="#f5d98e" }) => (
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BACKUP / RESTORE
-// ═══════════════════════════════════════════════════════════════════════════════
-function BackupModal({ onClose, session }) {
-  const fileRef = useRef(null);
-  const [msg, setMsg] = useState(null);
-  const [syncing, setSyncing] = useState(false);
-  const lastBackupAt = window.localStorage.getItem("lumiere_last_backup_at");
-
-  const counts = useMemo(() => {
-    const out = {};
-    BACKUP_KEYS.forEach(k => {
-      try {
-        const v = JSON.parse(window.localStorage.getItem(k) || "[]");
-        out[k] = Array.isArray(v) ? v.length : 0;
-      } catch { out[k] = 0; }
-    });
-    return out;
-  }, []);
-
-  const exportBackup = () => {
-    const payload = { version: 1, exportedAt: new Date().toISOString(), data: {} };
-    BACKUP_KEYS.forEach(k => {
-      payload.data[k] = JSON.parse(window.localStorage.getItem(k) || "null");
-    });
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const d = new Date();
-    const stamp = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-    a.href = url; a.download = `lumiere-backup-${stamp}.json`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    window.localStorage.setItem("lumiere_last_backup_at", new Date().toISOString());
-    setMsg({ type:"good", text:"已下載備份檔。" });
-  };
-
-  const importBackup = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const obj = JSON.parse(reader.result);
-        if (!obj || !obj.data) throw new Error("格式錯誤");
-        if (!window.confirm("匯入備份會覆蓋目前所有資料，確定要繼續嗎？")) return;
-        BACKUP_KEYS.forEach(k => {
-          if (obj.data[k] != null) {
-            window.localStorage.setItem(k, JSON.stringify(obj.data[k]));
-          }
-        });
-        setMsg({ type:"good", text:"匯入成功！頁面將重新載入…" });
-        setTimeout(() => window.location.reload(), 800);
-      } catch (err) {
-        setMsg({ type:"poor", text:"匯入失敗：檔案格式不正確。" });
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const clearAll = () => {
-    if (!window.confirm("確定清除所有資料？此動作無法復原（建議先匯出備份）")) return;
-    if (!window.confirm("再次確認：所有營業/進貨/人事/支出資料都會被刪除。")) return;
-    BACKUP_KEYS.forEach(k => window.localStorage.removeItem(k));
-    window.location.reload();
-  };
-
-  const manualSync = async () => {
-    setSyncing(true); setMsg(null);
-    try {
-      await flushPending();
-      const r = await pullFromCloud();
-      setMsg(r.ok
-        ? { type:"good", text:`雲端同步完成，拉下 ${r.count||0} 筆資料。` }
-        : { type:"poor", text:`同步失敗：${r.reason}` });
-    } finally { setSyncing(false); }
-  };
-
-  const logout = async () => {
-    if (!window.confirm("確定要登出？登出後雲端同步會停止（資料仍會留在這個瀏覽器）。")) return;
-    await supabase.auth.signOut();
-    window.location.reload();
-  };
-
-  return (
-    <Modal title="設定" onClose={onClose}>
-      {supabaseEnabled && session && (
-        <div style={{background:"rgba(255,200,120,0.06)",borderRadius:12,padding:14,marginBottom:16,fontSize:12,color:"#b09080",border:"1px solid rgba(255,200,120,0.15)"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-            <Icon name="person" size={14} color="#f5d98e"/>
-            <span style={{color:"#f5d98e",fontWeight:700}}>{session.user.email}</span>
-          </div>
-          <div style={{fontSize:11,color:"#806050",marginBottom:10}}>
-            資料會自動同步到雲端，多裝置共用一份。
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <Btn small variant="ghost" onClick={manualSync}>
-              <span style={{display:"flex",alignItems:"center",gap:4}}>
-                <Icon name="sync" size={12} color="#f5d98e"/>{syncing ? "同步中…" : "立即同步"}
-              </span>
-            </Btn>
-            <Btn small variant="danger" onClick={logout}>
-              <span style={{display:"flex",alignItems:"center",gap:4}}>
-                <Icon name="logout" size={12} color="#ff8a8a"/>登出
-              </span>
-            </Btn>
-          </div>
-        </div>
-      )}
-
-      <div style={{fontSize:12,color:"#b09080",lineHeight:1.7,marginBottom:14}}>
-        {supabaseEnabled && session
-          ? "備份檔可額外保存到電腦/雲端硬碟，作為雙重保險。"
-          : "資料儲存在這個瀏覽器裡。建議每週匯出一次備份，並在另一個裝置匯入以保持同步。"}
-      </div>
-
-      <div style={{background:"rgba(255,255,255,0.04)",borderRadius:12,padding:14,marginBottom:16,fontSize:12,color:"#b09080"}}>
-        <div style={{marginBottom:6}}>目前資料筆數：</div>
-        <div>營業 {counts.lumiere_sales_v2} · 進貨 {counts.lumiere_purchases_v2} · 員工 {counts.lumiere_staff_v2} · 支出 {counts.lumiere_expenses_v2}</div>
-        {lastBackupAt && (
-          <div style={{marginTop:6,color:"#806050"}}>上次本地備份：{new Date(lastBackupAt).toLocaleString()}</div>
-        )}
-      </div>
-
-      <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
-        <Btn onClick={exportBackup}>
-          <span style={{display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
-            <Icon name="download" size={16} color="#2a1a05"/>匯出備份 (JSON)
-          </span>
-        </Btn>
-        <Btn variant="ghost" onClick={() => fileRef.current?.click()}>
-          <span style={{display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
-            <Icon name="upload" size={16} color="#f5d98e"/>從備份檔還原
-          </span>
-        </Btn>
-        <input ref={fileRef} type="file" accept="application/json,.json" onChange={importBackup} style={{display:"none"}}/>
-      </div>
-
-      <div style={{borderTop:"1px solid rgba(255,200,120,0.12)",paddingTop:12}}>
-        <Btn small variant="danger" onClick={clearAll}>清除所有本地資料</Btn>
-      </div>
-
-      {msg && (
-        <div style={{
-          marginTop:14,padding:"10px 12px",borderRadius:10,fontSize:12,
-          background: msg.type==="good" ? "rgba(78,232,154,0.1)" : "rgba(255,112,112,0.1)",
-          color: msg.type==="good" ? "#4ee89a" : "#ff7070",
-        }}>{msg.text}</div>
-      )}
-    </Modal>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SYNC BADGE
-// ═══════════════════════════════════════════════════════════════════════════════
-function SyncBadge() {
-  const [s, setS] = useState(getSyncStatus());
-  useEffect(() => onSyncStatus(setS), []);
-  if (!supabaseEnabled) return null;
-
-  const map = {
-    idle:    { icon: "cloud",     color: "#a08060", label: "待同步" },
-    syncing: { icon: "sync",      color: "#b0d4ff", label: "同步中…" },
-    synced:  { icon: "cloud",     color: "#4ee89a", label: "已同步" },
-    offline: { icon: "cloud_off", color: "#a08060", label: "離線" },
-    error:   { icon: "warning",   color: "#ff7070", label: "同步失敗" },
-  };
-  const cur = map[s.state] || map.idle;
-  return (
-    <div title={s.error ? `錯誤：${s.error}` : cur.label} style={{
-      display:"flex",alignItems:"center",gap:4,
-      padding:"4px 8px",borderRadius:8,
-      background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,200,120,0.15)",
-      fontSize:11,color:cur.color,
-    }}>
-      <Icon name={cur.icon} size={12} color={cur.color}/>
-      <span style={{fontSize:10}}>{cur.label}</span>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// LOGIN SCREEN
-// ═══════════════════════════════════════════════════════════════════════════════
-function LoginScreen({ onLoggedIn }) {
-  const [mode, setMode] = useState("login"); // login | signup
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const [info, setInfo] = useState(null);
-
-  const submit = async () => {
-    setErr(null); setInfo(null); setLoading(true);
-    try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        // 嘗試直接登入（若 email confirmation 已關閉就會成功）
-        const { error: e2 } = await supabase.auth.signInWithPassword({ email, password });
-        if (e2) {
-          setInfo("註冊成功！請到信箱點擊驗證連結後再登入。");
-          setMode("login");
-        } else {
-          onLoggedIn();
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        onLoggedIn();
-      }
-    } catch (e) {
-      setErr(e.message || "失敗");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div style={{
-      minHeight:"100vh",background:"#0d0820",color:"#f0e8d8",
-      display:"flex",alignItems:"center",justifyContent:"center",padding:20,
-      fontFamily:"'Lato','Helvetica Neue',sans-serif",
-    }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Lato:wght@300;400;700&display=swap');
-        * { box-sizing:border-box; }
-        input { color:#f0e8d8 !important; }
-        input::placeholder { color:#705050 !important; }
-      `}</style>
-      <div style={{
-        background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,200,120,0.15)",
-        borderRadius:20,padding:32,maxWidth:400,width:"100%",
-      }}>
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:24}}>
-          <div style={{width:44,height:44,borderRadius:12,background:"linear-gradient(135deg,#c9a84c,#f5d98e)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-            <Icon name="sparkle" size={22} color="#2a1a05"/>
-          </div>
-          <div>
-            <div style={{fontSize:18,fontWeight:700,fontFamily:"'Playfair Display',serif",color:"#f5d98e"}}>Lumière Beauty Bar</div>
-            <div style={{fontSize:11,color:"#a08060",letterSpacing:2}}>{mode === "login" ? "登入" : "註冊新帳號"}</div>
-          </div>
-        </div>
-
-        <Field label="Email">
-          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" style={inputStyle}/>
-        </Field>
-        <Field label="密碼（至少 6 個字元）">
-          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" style={inputStyle} onKeyDown={e=>e.key==="Enter"&&submit()}/>
-        </Field>
-
-        {err && (
-          <div style={{padding:"10px 12px",borderRadius:10,fontSize:12,marginBottom:12,background:"rgba(255,112,112,0.1)",color:"#ff7070"}}>
-            {err}
-          </div>
-        )}
-        {info && (
-          <div style={{padding:"10px 12px",borderRadius:10,fontSize:12,marginBottom:12,background:"rgba(78,232,154,0.1)",color:"#4ee89a"}}>
-            {info}
-          </div>
-        )}
-
-        <Btn onClick={submit} style={{width:"100%",marginBottom:10}}>
-          {loading ? "處理中…" : (mode === "login" ? "登入" : "註冊")}
-        </Btn>
-
-        <button
-          onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(null); setInfo(null); }}
-          style={{background:"none",border:"none",color:"#a08060",fontSize:12,cursor:"pointer",width:"100%",padding:8}}
-        >
-          {mode === "login" ? "還沒有帳號？點此註冊" : "已有帳號？返回登入"}
-        </button>
-
-        <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid rgba(255,200,120,0.1)",fontSize:11,color:"#806050",lineHeight:1.7}}>
-          登入後，資料會自動同步到雲端，手機和電腦看到的內容會一樣。<br/>
-          也支援離線使用，網路恢復後會自動上傳。
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// AUTH GATE (外層)
+// APP
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  // 沒設定 Supabase 環境變數 → 直接走純 local 模式
-  if (!supabaseEnabled) {
-    return <MainApp session={null} />;
-  }
-
-  const [session, setSession] = useState(undefined); // undefined = 載入中, null = 未登入
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
-      setSession(sess || null);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  // 登入後做一次 bootstrap：拉雲端 / 推本地
-  useEffect(() => {
-    if (session) {
-      bootstrapSync().then(() => flushPending());
-    }
-  }, [session?.user?.id]);
-
-  if (session === undefined) {
-    return (
-      <div style={{minHeight:"100vh",background:"#0d0820",color:"#a08060",display:"flex",alignItems:"center",justifyContent:"center"}}>
-        載入中…
-      </div>
-    );
-  }
-  if (!session) {
-    return <LoginScreen onLoggedIn={() => { /* onAuthStateChange 會處理 */ }}/>;
-  }
-  return <MainApp session={session}/>;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MAIN APP
-// ═══════════════════════════════════════════════════════════════════════════════
-function MainApp({ session }) {
   const { y: TY, m: TM, d: TD } = today();
 
   // ── Navigation ──────────────────────────────────────────────────────────────
   const [tab, setTab] = useState("dashboard");
-  const [backupOpen, setBackupOpen] = useState(false);
 
   // ── Data Stores ─────────────────────────────────────────────────────────────
   const [sales,     setSales,     salesLoaded]    = useStorage("lumiere_sales_v2", []);
   const [purchases, setPurchases, purchasesLoaded]= useStorage("lumiere_purchases_v2", []);
   const [staff,     setStaff,     staffLoaded]    = useStorage("lumiere_staff_v2", []);
   const [expenses,  setExpenses,  expensesLoaded] = useStorage("lumiere_expenses_v2", []);
+  // expenses: { id, year, month, category, label, amount, currency }
 
   // ── Selected period ──────────────────────────────────────────────────────────
   const [selYear,  setSelYear]  = useState(TY);
   const [selMonth, setSelMonth] = useState(TM);
 
   const loaded = salesLoaded && purchasesLoaded && staffLoaded && expensesLoaded;
-
-  // 提醒：超過 14 天沒備份就在主畫面顯示提示
-  const lastBackupAt = window.localStorage.getItem("lumiere_last_backup_at");
-  const daysSinceBackup = lastBackupAt
-    ? Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000)
-    : null;
-  const totalEntries = sales.length + purchases.length + staff.length + expenses.length;
-  // 已登入雲端的情況下，不需要強迫本地備份提醒
-  const showBackupNudge = !supabaseEnabled && totalEntries > 0 && (daysSinceBackup == null || daysSinceBackup >= 14);
 
   // ── IDs ──────────────────────────────────────────────────────────────────────
   const uid = () => Math.random().toString(36).slice(2,9).toUpperCase();
@@ -656,12 +282,16 @@ function MainApp({ session }) {
     { id:"reports",   label:"報告", icon:"report" },
   ];
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────────
   return (
     <div style={{
       minHeight:"100vh", background:"#0d0820",
       color:"#f0e8d8", fontFamily:"'Lato','Helvetica Neue',sans-serif",
       display:"flex", flexDirection:"column",
     }}>
+      {/* Google Fonts */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Lato:wght@300;400;700&display=swap');
         * { box-sizing:border-box; }
@@ -689,42 +319,10 @@ function MainApp({ session }) {
           </div>
           <div style={{fontSize:10,color:"#a08060",letterSpacing:2,textTransform:"uppercase"}}>管理系統</div>
         </div>
-        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-          <SyncBadge/>
-          <span style={{fontSize:12,color:"#806050"}}>{TY}/{pad(TM)}/{pad(TD)}</span>
-          <button
-            onClick={() => setBackupOpen(true)}
-            title="備份 / 設定"
-            style={{
-              background: showBackupNudge
-                ? "linear-gradient(135deg,#c9a84c,#f5d98e)"
-                : "rgba(255,200,120,0.1)",
-              border: "1px solid rgba(255,200,120,0.25)",
-              borderRadius: 10, padding: 6, cursor: "pointer",
-              display:"flex", alignItems:"center", justifyContent:"center",
-            }}
-          >
-            <Icon name="settings" size={16} color={showBackupNudge ? "#2a1a05" : "#f5d98e"}/>
-          </button>
+        <div style={{marginLeft:"auto",fontSize:12,color:"#806050"}}>
+          {TY}/{pad(TM)}/{pad(TD)}
         </div>
       </header>
-
-      {/* Backup nudge banner */}
-      {showBackupNudge && (
-        <div style={{
-          background:"rgba(245,217,142,0.08)",
-          borderBottom:"1px solid rgba(255,200,120,0.15)",
-          padding:"8px 16px",fontSize:12,color:"#f5d98e",
-          display:"flex",alignItems:"center",gap:8,
-        }}>
-          <Icon name="warning" size={14} color="#f5d98e"/>
-          <span>
-            {daysSinceBackup == null
-              ? "建議匯出第一份備份，避免資料遺失。"
-              : `已 ${daysSinceBackup} 天沒備份，點右上 ⚙ 匯出一份吧。`}
-          </span>
-        </div>
-      )}
 
       {/* Content */}
       <div style={{flex:1,overflowY:"auto",padding:"16px 16px 80px"}}>
@@ -748,7 +346,6 @@ function MainApp({ session }) {
         background:"rgba(13,8,32,0.97)",
         borderTop:"1px solid rgba(255,200,120,0.12)",
         display:"flex",
-        paddingBottom:"env(safe-area-inset-bottom)",
       }}>
         {NAV.map(n => (
           <button key={n.id} onClick={() => setTab(n.id)} style={{
@@ -763,8 +360,6 @@ function MainApp({ session }) {
           </button>
         ))}
       </nav>
-
-      {backupOpen && <BackupModal onClose={() => setBackupOpen(false)} session={session}/>}
     </div>
   );
 }
@@ -778,10 +373,12 @@ function Dashboard({ selYear,setSelYear,selMonth,setSelMonth,curSummary,prevSumm
   const prevYrRev = yearRevenue(selYear-1);
   const yrGrowth = prevYrRev > 0 ? (yrRev - prevYrRev)/prevYrRev*100 : null;
 
+  // Last 5 sales
   const recent = [...sales].sort((a,b) => b.id.localeCompare(a.id)).slice(0,5);
 
   return (
     <div>
+      {/* Period Selector */}
       <div style={{display:"flex",gap:8,marginBottom:20,alignItems:"center"}}>
         <select value={selYear} onChange={e=>setSelYear(Number(e.target.value))} style={{...inputStyle,width:90}}>
           {years.map(y=><option key={y} value={y}>{y}</option>)}
@@ -791,6 +388,7 @@ function Dashboard({ selYear,setSelYear,selMonth,setSelMonth,curSummary,prevSumm
         </select>
       </div>
 
+      {/* Monthly KPIs */}
       <SectionTitle icon="dashboard" label={`${selYear}年 ${MONTHS[selMonth-1]} 總覽`}/>
       <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
         <StatCard label="當月營業額" value={fmt(curSummary.rev)} icon="revenue" trend={revGrowth}/>
@@ -801,6 +399,7 @@ function Dashboard({ selYear,setSelYear,selMonth,setSelMonth,curSummary,prevSumm
         <StatCard label="平均日營業額" value={fmt(curSummary.avgDaily)} icon="trend_up" accent="#e0b0ff"/>
       </div>
 
+      {/* Health Indicators */}
       <SectionTitle icon="info" label="本月健康指標"/>
       <div style={{background:"rgba(255,255,255,0.03)",borderRadius:16,padding:16,marginBottom:20,border:"1px solid rgba(255,200,120,0.1)"}}>
         <HealthRow label="進貨佔比" ratio={curSummary.purchaseRatio} status={curSummary.purchaseStatus} threshold={[30,45]}/>
@@ -808,12 +407,15 @@ function Dashboard({ selYear,setSelYear,selMonth,setSelMonth,curSummary,prevSumm
         <HealthRow label="整體獲利" ratio={curSummary.rev>0?curSummary.profit/curSummary.rev*100:0} status={curSummary.profitStatus} threshold={[20,5]} isProfit/>
       </div>
 
+      {/* Year Overview */}
       <SectionTitle icon="report" label={`${selYear} 年度概況`}/>
       <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
-        <StatCard label="年度總營業額" value={fmt(yrRev)} icon="revenue" accent="#f5d98e" trend={yrGrowth}/>
+        <StatCard label="年度總營業額" value={fmt(yrRev)} icon="revenue" accent="#f5d98e"
+          trend={yrGrowth}/>
         <StatCard label="12月月均" value={fmt(yrRev/12)} icon="calendar" accent="#b0d4ff"/>
       </div>
 
+      {/* Monthly bar chart */}
       <div style={{background:"rgba(255,255,255,0.03)",borderRadius:16,padding:16,marginBottom:20,border:"1px solid rgba(255,200,120,0.1)"}}>
         <div style={{fontSize:11,color:"#a09080",marginBottom:12,letterSpacing:1}}>各月營業額</div>
         {(() => {
@@ -836,6 +438,7 @@ function Dashboard({ selYear,setSelYear,selMonth,setSelMonth,curSummary,prevSumm
         })()}
       </div>
 
+      {/* Recent Sales */}
       <SectionTitle icon="revenue" label="最近營業紀錄"/>
       {recent.length === 0 ? <EmptyState text="尚無營業紀錄"/> : (
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -1062,7 +665,7 @@ function PurchasesTab({ purchases,setPurchases,selYear,setSelYear,selMonth,setSe
 // ═══════════════════════════════════════════════════════════════════════════════
 function StaffTab({ staff,setStaff,selYear,setSelYear,selMonth,setSelMonth,uid,monthlyStaffCost,TY,TM }) {
   const [addStaffModal,setAddStaffModal] = useState(false);
-  const [addRecordModal,setAddRecordModal] = useState(null);
+  const [addRecordModal,setAddRecordModal] = useState(null); // staffId
   const [staffForm,setStaffForm] = useState({name:"",hourlyRate:""});
   const [recordForm,setRecordForm] = useState({year:TY,month:TM,hours:""});
   const years = Array.from({length:6},(_,i)=>TY-i);
@@ -1203,6 +806,7 @@ function ExpensesTab({ expenses,setExpenses,selYear,setSelYear,selMonth,setSelMo
         <select value={selMonth} onChange={e=>setSelMonth(Number(e.target.value))} style={{...inputStyle,flex:1}}>{MONTHS.map((m,i)=><option key={i+1} value={i+1}>{m}</option>)}</select>
       </div>
 
+      {/* P&L Summary */}
       <div style={{background:"linear-gradient(135deg,rgba(30,15,60,0.8),rgba(20,10,40,0.8))",borderRadius:16,padding:18,marginBottom:16,border:"1px solid rgba(255,200,120,0.15)"}}>
         <div style={{fontSize:12,color:"#a09080",letterSpacing:1,marginBottom:12}}>本月損益概覽</div>
         <PLRow label="營業額" value={summary.rev} color="#f5d98e"/>
@@ -1339,6 +943,7 @@ function MonthlyReport({ selYear,setSelYear,selMonth,setSelMonth,getMonthSummary
         {revGrowth!=null&&<ReportRow label="vs 上月成長率" value={`${revGrowth>=0?"+":""}${revGrowth.toFixed(1)}%`} accent={revGrowth>=0?"#4ee89a":"#ff7070"}/>}
       </ReportCard>
 
+      {/* AI-style insight */}
       <div style={{marginTop:16,background:"rgba(255,200,120,0.05)",border:"1px solid rgba(255,200,120,0.15)",borderRadius:14,padding:16}}>
         <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
           <Icon name="sparkle" size={14} color="#f5d98e"/>
@@ -1409,7 +1014,8 @@ function AnnualReport({ selYear,setSelYear,getMonthSummary,yearRevenue,years,TY 
 }
 
 function CompareReport({ selYear,setSelYear,selMonth,setSelMonth,cmpYear,setCmpYear,getMonthSummary,yearRevenue,years,TY,TM }) {
-  const [mode,setMode] = useState("month");
+  const [mode,setMode] = useState("month"); // month | year
+  const years2 = years.filter(y=>y!==selYear);
 
   if (mode==="month") {
     const a = getMonthSummary(selYear,selMonth);
@@ -1455,6 +1061,7 @@ function CompareReport({ selYear,setSelYear,selMonth,setSelMonth,cmpYear,setCmpY
     );
   }
 
+  // Year mode
   const aRev = yearRevenue(selYear);
   const bRev = yearRevenue(cmpYear);
   const yDiff = bRev>0?(aRev-bRev)/bRev*100:null;
